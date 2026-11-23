@@ -428,8 +428,9 @@ const srcName = u => /t\.me\//.test(u) ? "텔레그램" : /x\.com|twitter\.com/.
 const hlLinks = a => [ext("https://hypurrscan.io/address/" + a, "Hypurrscan"), ext("https://hyperdash.com/track/" + a, "Hyperdash"), ext("https://www.coinglass.com/hyperliquid/" + a, "CoinGlass"), ext("https://app.hyperliquid.xyz/explorer/address/" + a, "HL 익스플로러")];
 const posText = p => `${p.coin} ${p.size > 0 ? "롱" : "숏"} ${fmtUsd(Math.abs(p.value))}`;
 async function viewHunt() {
-  const [H, syms] = await Promise.all([api("hunt"), api("symbols")]); cache.symbols = syms;
-  const all = H.wallets, F = { type: sessionStorage.getItem("htype") || "", grade: "", chain: "", q: "", sort: "n", n: 40 };
+  const [H, syms, HLD] = await Promise.all([api("hunt"), api("symbols"), api("hl").catch(() => ({ accounts: [] }))]); cache.symbols = syms;
+  const hlBy = new Map(HLD.accounts.map(w => [w.addr, w]));
+  const all = H.wallets.map(r => { const w = hlBy.get(r.address); return w ? { ...r, hl: { av: w.av, perp_value: w.perp_value, month_pnl: (w.perf.month || {}).pnl, positions: w.positions.slice(0, 5) } } : { ...r, hl: null }; }), F = { type: sessionStorage.getItem("htype") || "", grade: "", chain: "", q: "", sort: "n", n: 40 };
   const chips = el("div", { class: "chips" }), bar = el("div", { class: "row", style: "margin-bottom:10px" }), grid = el("div", { class: "wgrid" }), more = el("button", { class: "btn", style: "display:block;margin:16px auto", text: "더 보기" });
   const q = el("input", { type: "search", placeholder: "주체·주소·종목 검색", style: "flex:1;min-width:150px;max-width:320px" });
   q.addEventListener("input", () => { F.q = q.value; F.n = 40; draw(); }); more.addEventListener("click", () => { F.n += 40; draw(); });
@@ -470,8 +471,8 @@ async function viewHunt() {
 
 /* ------------------------------------------------------------------ Hyperliquid whales */
 async function viewHL(addr) {
-  const [H, syms] = await Promise.all([api("hunt"), api("symbols")]); cache.symbols = syms;
-  const all = H.hl.map(w => ({ ...w, posSum: w.positions.reduce((s, p) => s + Math.abs(p.value), 0), nm: (w.label && w.label.entity) || w.name || "", m: (w.perf.month || {}), at: (w.perf.allTime || {}) }));
+  const [H, syms, EV] = await Promise.all([api("hl"), api("symbols"), api("hl_events").catch(() => [])]); cache.symbols = syms;
+  const all = H.accounts.map(w => ({ ...w, posSum: w.positions.reduce((s, p) => s + Math.abs(p.value), 0), nm: (w.label && w.label.entity) || w.name || "", m: (w.perf.month || {}), at: (w.perf.allTime || {}) }));
   const F = { show: sessionStorage.getItem("hlshow") || "pos", sort: "pos", n: 40 };
   const SHOW = { pos: ["포지션 있음", w => w.positions.length], all: ["전체", () => true], named: ["글에서 언급", w => w.why.some(x => x.includes("언급"))], idle: ["보유 전용", w => w.why.some(x => x.includes("거래 없는"))] };
   const SORT = { pos: ["포지션 합계 큰 순", w => -w.posSum], av: ["평가액 큰 순", w => -(w.av != null ? w.av : w.perp_value)], mp: ["한 달 수익 큰 순", w => -(w.m.pnl ?? -Infinity)], ml: ["한 달 손실 큰 순", w => (w.m.pnl ?? Infinity)], at: ["누적 수익 큰 순", w => -(w.at.pnl ?? -Infinity)], vol: ["한 달 거래량 큰 순", w => -(w.m.vlm ?? 0)] };
@@ -504,12 +505,25 @@ async function viewHL(addr) {
     grid.replaceChildren(...list.slice(0, F.n).map(card));
     more.style.display = list.length > F.n ? "block" : "none";
   }
-  const checked = Math.max(...all.map(w => w.checked || 0));
+  const checked = H.checked || Math.max(...all.map(w => w.checked || 0));
+  const byAddr = new Map(all.map(w => [w.addr, w]));
+  const side = e => e.side === "long" ? "롱" : "숏";
+  const evText = e => e.kind === "open" ? `${e.coin} ${side(e)} 신규 진입 ${fmtUsd(e.value)}${e.lev ? " · " + e.lev + "x" : ""}`
+    : e.kind === "close" ? `${e.coin} ${side(e)} 포지션 종료 (직전 규모 ${fmtUsd(e.value)}, 직전 미실현 ${e.last_upnl >= 0 ? "+" : ""}${fmtUsd(e.last_upnl)})`
+    : e.kind === "flip" ? `${e.coin} 방향 전환 → ${side(e)} ${fmtUsd(e.value)}`
+    : e.kind === "increase" ? `${e.coin} ${side(e)} 확대 ${fmtUsd(e.prev_value)} → ${fmtUsd(e.value)}`
+    : e.kind === "decrease" ? `${e.coin} ${side(e)} 축소 ${fmtUsd(e.prev_value)} → ${fmtUsd(e.value)}`
+    : `계좌 평가액 ${fmtUsd(e.prev_value)} → ${fmtUsd(e.value)} (입출금 또는 손익)`;
+  const evs = (addr ? EV.filter(e => e.addr === addr.toLowerCase()) : EV).slice(0, addr ? 60 : 40);
+  const evBox = el("div", { class: "card" }, evs.length ? evs.map(e => { const w = byAddr.get(e.addr) || {}; return el("div", { class: "post" }, [el("div", { class: "row sm" }, [el("b", { text: fmtTime(e.ts) }),
+    el("a", { href: "#/hl/" + e.addr, text: w.nm || short(e.addr) }), w.label ? el("span", { class: "badge", text: HTYPE[w.label.type] || w.label.type }) : null]), el("div", { text: evText(e) })]); })
+    : [el("div", { class: "empty", text: (H.runs || 0) < 2 ? "추적을 막 시작했습니다. 다음 조회(1시간 간격)부터 변화가 기록됩니다." : "최근 7일간 기록된 큰 변화가 없습니다." })]);
   $("#view").replaceChildren(
-    el("div", { class: "sec sm", text: `하이퍼리퀴드 공식 리더보드 상위 계정과 텔레그램·X에서 언급된 계정입니다. 포지션 조회 시각 ${fmtTime(checked)} KST — 실시간이 아니라 그 시점의 스냅샷입니다.` }),
+    el("div", { class: "sec sm", text: `하이퍼리퀴드 공식 리더보드 상위 계정과 텔레그램·X에서 언급된 계정입니다. 1시간 간격으로 포지션을 다시 읽습니다. 마지막 조회 ${fmtTime(checked)} KST.` }),
     el("div", { class: "tiles" }, [tile("추적 계정", all.length + "개", "포지션 보유 " + all.filter(w => w.positions.length).length + "개"), tile("롱 합계", fmtUsd(totL), "추적 계정의 무기한 롱"), tile("숏 합계", fmtUsd(totS), "추적 계정의 무기한 숏"), tile("롱 비중", (totL + totS ? (totL / (totL + totS) * 100).toFixed(0) : "–") + "%", "명목 금액 기준")]),
     addr ? null : el("h3", { text: "코인별 롱·숏 합계 (추적 계정)" }),
     addr ? null : el("div", { class: "scroll" }, [el("table", {}, [th(["코인", "롱", "숏", "순(롱−숏)", "포지션 수"], [1, 2, 3, 4]), el("tbody", {}, coins.map(c => el("tr", {}, [el("td", {}, [el("a", { href: "#/chart/" + symKeyFor(c.coin.replace(/^k/, "").toUpperCase()), text: c.coin })]), el("td", { class: "num", text: fmtUsd(c.long) }), el("td", { class: "num", text: fmtUsd(c.short) }), el("td", { class: "num" }, [delta(c.long - c.short)]), el("td", { class: "num", text: c.n })])))])]),
+    el("h3", { text: addr ? "이 계정의 최근 변화" : "최근 변화 (포지션 $1M 이상의 진입·종료·방향 전환·30% 이상 증감)" }), evBox,
     el("h3", { text: addr ? "계정" : "계정 목록" }), chips, grid, more);
   sortSel.value = F.sort; draw();
 }
