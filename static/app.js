@@ -418,6 +418,102 @@ async function viewImages() {
   $("#view").replaceChildren(filters, stats, gal, more); draw();
 }
 
+
+/* ------------------------------------------------------------------ wallet hunt (registry) */
+const HTYPE = { mm: "마켓메이커·OTC", foundation_team: "재단·팀", vc_fund: "VC·펀드", institution: "기관", hl_trader: "HL 트레이더", whale: "고래", named_individual: "실명·닉네임 개인", exchange: "거래소", hacker: "해커·세탁", contract: "컨트랙트", other: "기타" };
+const HORDER = ["mm", "foundation_team", "vc_fund", "institution", "hl_trader", "whale", "named_individual", "exchange", "hacker", "contract", "other"];
+const GRADE_TXT = { A: "A · 글이 단정 + 공개 라벨 일치 또는 작성자 2곳 이상", B: "B · 한 작성자가 단정 또는 두 작성자가 추정", C: "C · 한 작성자의 추정", "별칭": "별칭 · 별명·핸들일 뿐 실제 주인 미확인", "-": "주체 미상" };
+const HEXPL = { ethereum: "Etherscan", bsc: "BscScan", base: "BaseScan", arbitrum: "Arbiscan", solana: "Solscan", bitcoin: "mempool", tron: "Tronscan", hyperliquid: "Hypurrscan" };
+const srcName = u => /t\.me\//.test(u) ? "텔레그램" : /x\.com|twitter\.com/.test(u) ? "X" : "출처";
+const hlLinks = a => [ext("https://hypurrscan.io/address/" + a, "Hypurrscan"), ext("https://hyperdash.com/track/" + a, "Hyperdash"), ext("https://www.coinglass.com/hyperliquid/" + a, "CoinGlass"), ext("https://app.hyperliquid.xyz/explorer/address/" + a, "HL 익스플로러")];
+const posText = p => `${p.coin} ${p.size > 0 ? "롱" : "숏"} ${fmtUsd(Math.abs(p.value))}`;
+async function viewHunt() {
+  const [H, syms] = await Promise.all([api("hunt"), api("symbols")]); cache.symbols = syms;
+  const all = H.wallets, F = { type: sessionStorage.getItem("htype") || "", grade: "", chain: "", q: "", sort: "n", n: 40 };
+  const chips = el("div", { class: "chips" }), bar = el("div", { class: "row", style: "margin-bottom:10px" }), grid = el("div", { class: "wgrid" }), more = el("button", { class: "btn", style: "display:block;margin:16px auto", text: "더 보기" });
+  const q = el("input", { type: "search", placeholder: "주체·주소·종목 검색", style: "flex:1;min-width:150px;max-width:320px" });
+  q.addEventListener("input", () => { F.q = q.value; F.n = 40; draw(); }); more.addEventListener("click", () => { F.n += 40; draw(); });
+  const GO = { A: 0, B: 1, C: 2, "별칭": 3, "-": 4 };
+  const SORT = { n: ["언급 많은 순", r => -r.n_mentions], last: ["최근 언급 순", r => -r.last], grade: ["등급 순", r => GO[r.grade] * 1e6 - r.n_mentions] };
+  function card(r) {
+    const links = [];
+    if (r.explorer) links.push(ext(r.explorer, HEXPL[r.chain] || "DeBank"));
+    if (r.address.startsWith("0x") && r.chain !== "hyperliquid") links.push(ext("https://debank.com/profile/" + r.address, "DeBank"));
+    if (r.chain === "hyperliquid") links.push(ext("https://hyperdash.com/track/" + r.address, "Hyperdash"));
+    links.push(ext("https://intel.arkm.com/explorer/address/" + r.address, "Arkham"));
+    r.sources.slice(0, 3).forEach((u, i) => links.push(ext(u, srcName(u) + " 글 " + (i + 1))));
+    return el("div", { class: "card wcard", style: "cursor:default" }, [
+      el("div", { class: "row" }, [el("b", { text: r.entity || "(주체 미상)" }), el("span", { class: "badge", title: GRADE_TXT[r.grade], text: r.grade === "-" ? "미상" : "등급 " + r.grade }), el("span", { class: "grow" }), el("span", { class: "mu sm", text: fmtDay(r.first) + "~" + fmtDay(r.last) })]),
+      el("div", { style: "margin:4px 0" }, [el("span", { class: "badge", text: HTYPE[r.type] || r.type }), el("span", { class: "badge", text: r.chain }), r.public_label ? el("span", { class: "badge", title: "Blockscout 공개 라벨", text: "공개 라벨: " + r.public_label.slice(0, 28) }) : null,
+        ...r.tokens.slice(0, 4).map(t => el("a", { class: "badge", href: "#/chart/" + symKeyFor(t.toUpperCase()), text: t }))]),
+      el("div", { class: "mono", style: "word-break:break-all", text: r.address }),
+      el("div", { style: "margin:6px 0", text: r.summary }),
+      r.hl ? el("div", { class: "sec sm" }, [document.createTextNode(`HL 평가액 ${fmtUsd(r.hl.av != null ? r.hl.av : r.hl.perp_value)} · 한 달 손익 `), delta(r.hl.month_pnl), document.createTextNode(r.hl.positions.length ? " · " + r.hl.positions.slice(0, 3).map(posText).join(", ") : " · 포지션 없음"), document.createTextNode(" "), el("a", { href: "#/hl/" + r.address, text: "자세히" })]) : null,
+      el("div", { class: "mu sm", text: `언급 ${r.n_mentions}회 · ${r.authors.slice(0, 4).join(", ")}` }),
+      el("div", { class: "row", style: "margin-top:8px" }, links)]);
+  }
+  function draw() {
+    const s = F.q.trim().toLowerCase();
+    const base = all.filter(r => (!F.grade || r.grade === F.grade) && (!F.chain || r.chain === F.chain) && (!s || (r.entity + " " + r.address + " " + r.tokens.join(" ") + " " + r.summary).toLowerCase().includes(s)));
+    const list = base.filter(r => !F.type || r.type === F.type).sort((a, b) => SORT[F.sort][1](a) - SORT[F.sort][1](b));
+    chips.replaceChildren(el("button", { class: "btn" + (!F.type ? " on" : ""), text: "전체 " + base.length, onclick: () => { F.type = ""; sessionStorage.setItem("htype", ""); F.n = 40; draw(); } }),
+      ...HORDER.map(t => [t, base.filter(r => r.type === t).length]).filter(x => x[1]).map(([t, n]) => el("button", { class: "btn" + (F.type === t ? " on" : ""), text: HTYPE[t] + " " + n, onclick: () => { F.type = t; sessionStorage.setItem("htype", t); F.n = 40; draw(); } })));
+    const mk = (key, label, opts, lab) => { const x = el("select", {}, [el("option", { value: "", text: label }), ...opts.map(o => el("option", { value: o, text: lab ? lab(o) : o }))]); x.value = F[key]; x.addEventListener("change", () => { F[key] = x.value; F.n = 40; draw(); }); return x; };
+    const sortSel = el("select", {}, Object.entries(SORT).map(([k, v]) => el("option", { value: k, text: v[0] }))); sortSel.value = F.sort; sortSel.addEventListener("change", () => { F.sort = sortSel.value; draw(); });
+    bar.replaceChildren(mk("grade", "등급 전체", ["A", "B", "C", "별칭", "-"], g => GRADE_TXT[g]), mk("chain", "체인 전체", [...new Set(all.map(r => r.chain))].sort()), sortSel, q, el("span", { class: "sec sm", text: list.length + "개" }));
+    grid.replaceChildren(...list.slice(0, F.n).map(card));
+    more.style.display = list.length > F.n ? "block" : "none";
+  }
+  $("#view").replaceChildren(el("div", { class: "sec sm", style: "margin-bottom:8px", text: "텔레그램 온체인 알림 채널과 X에서 최근 30일간 언급된 지갑입니다. 주체 이름은 출처 글의 주장이며, 등급에 마우스를 올리면 기준이 나옵니다." }), chips, bar, grid, more);
+  draw();
+}
+
+/* ------------------------------------------------------------------ Hyperliquid whales */
+async function viewHL(addr) {
+  const [H, syms] = await Promise.all([api("hunt"), api("symbols")]); cache.symbols = syms;
+  const all = H.hl.map(w => ({ ...w, posSum: w.positions.reduce((s, p) => s + Math.abs(p.value), 0), nm: (w.label && w.label.entity) || w.name || "", m: (w.perf.month || {}), at: (w.perf.allTime || {}) }));
+  const F = { show: sessionStorage.getItem("hlshow") || "pos", sort: "pos", n: 40 };
+  const SHOW = { pos: ["포지션 있음", w => w.positions.length], all: ["전체", () => true], named: ["글에서 언급", w => w.why.some(x => x.includes("언급"))], idle: ["보유 전용", w => w.why.some(x => x.includes("거래 없는"))] };
+  const SORT = { pos: ["포지션 합계 큰 순", w => -w.posSum], av: ["평가액 큰 순", w => -(w.av != null ? w.av : w.perp_value)], mp: ["한 달 수익 큰 순", w => -(w.m.pnl ?? -Infinity)], ml: ["한 달 손실 큰 순", w => (w.m.pnl ?? Infinity)], at: ["누적 수익 큰 순", w => -(w.at.pnl ?? -Infinity)], vol: ["한 달 거래량 큰 순", w => -(w.m.vlm ?? 0)] };
+  const tile = (l, v, h) => el("div", { class: "tile" }, [el("div", { class: "l", text: l }), el("div", { class: "v" }, [v]), h ? el("div", { class: "h", text: h }) : null]);
+  const chips = el("div", { class: "chips" }), grid = el("div", { class: "wgrid" }), more = el("button", { class: "btn", style: "display:block;margin:16px auto", text: "더 보기" });
+  more.addEventListener("click", () => { F.n += 40; draw(); });
+  const sortSel = el("select", {}, Object.entries(SORT).map(([k, v]) => el("option", { value: k, text: v[0] }))); sortSel.addEventListener("change", () => { F.sort = sortSel.value; draw(); });
+  // long/short totals per coin across tracked accounts
+  const coin = new Map();
+  for (const w of all) for (const p of w.positions) { const c = coin.get(p.coin) || { coin: p.coin, long: 0, short: 0, n: 0 }; if (p.size > 0) c.long += Math.abs(p.value); else c.short += Math.abs(p.value); c.n++; coin.set(p.coin, c); }
+  const coins = [...coin.values()].sort((a, b) => (b.long + b.short) - (a.long + a.short)).slice(0, 12);
+  const totL = [...coin.values()].reduce((s, c) => s + c.long, 0), totS = [...coin.values()].reduce((s, c) => s + c.short, 0);
+  const th = (heads, nums) => el("thead", {}, [el("tr", {}, heads.map((x, i) => el("th", { class: nums.includes(i) ? "num" : "", text: x })))]);
+  function card(w) {
+    const av = w.av != null ? w.av : w.perp_value;
+    return el("div", { class: "card wcard", style: "cursor:default", id: "hl-" + w.addr }, [
+      el("div", { class: "row" }, [el("b", { text: w.nm || "(이름 없음)" }), w.label ? el("span", { class: "badge", text: HTYPE[w.label.type] || w.label.type }) : null, el("span", { class: "grow" }), el("span", { class: "mu sm", text: w.why.map(x => x.replace("매매하는 계정 중 ", "").replace("최근 ", "")).slice(0, 2).join(" · ") })]),
+      el("div", { class: "mono sm", style: "word-break:break-all", text: w.addr }),
+      el("div", { class: "kv", style: "grid-template-columns:repeat(4,1fr)" }, [el("div", {}, ["평가액", el("b", { text: fmtUsd(av) })]), el("div", {}, ["한 달 손익", el("b", {}, [delta(w.m.pnl)])]), el("div", {}, ["누적 손익", el("b", {}, [delta(w.at.pnl)])]), el("div", {}, ["한 달 거래량", el("b", { text: fmtUsd(w.m.vlm) })])]),
+      w.positions.length ? el("div", { class: "scroll", style: "margin-top:8px" }, [el("table", {}, [th(["포지션", "규모", "미실현", "배율", "청산가"], [1, 2, 3, 4]),
+        el("tbody", {}, w.positions.slice(0, 6).map(p => el("tr", {}, [el("td", {}, [el("a", { href: "#/chart/" + symKeyFor(p.coin.replace(/^k/, "").toUpperCase()), text: p.coin }), el("span", { class: p.size > 0 ? "up" : "dn", style: "margin-left:6px", text: p.size > 0 ? "롱" : "숏" })]),
+          el("td", { class: "num", text: fmtUsd(Math.abs(p.value)) }), el("td", { class: "num" }, [delta(p.upnl)]), el("td", { class: "num", text: p.lev ? p.lev + "x" : "–" }), el("td", { class: "num", text: p.liq ? fmtPx(p.liq) : "–" })])))])]) : el("div", { class: "mu sm", style: "margin-top:6px", text: "무기한 포지션 없음" + (w.spot.length ? " · 현물: " + w.spot.slice(0, 3).map(x => x.coin + " " + fmtAmt(x.total)).join(", ") : "") }),
+      w.n_positions > 6 ? el("div", { class: "mu sm", text: `외 ${w.n_positions - 6}개 포지션` }) : null,
+      w.label && w.label.summary ? el("div", { class: "sec sm", style: "margin-top:6px", text: "글 요약: " + w.label.summary + " (" + w.label.authors.slice(0, 3).join(", ") + ")" }) : null,
+      el("div", { class: "row", style: "margin-top:8px" }, hlLinks(w.addr))]);
+  }
+  function draw() {
+    const list = (addr ? all.filter(w => w.addr === addr.toLowerCase()) : all.filter(SHOW[F.show][1])).sort((a, b) => SORT[F.sort][1](a) - SORT[F.sort][1](b));
+    chips.replaceChildren(...(addr ? [el("a", { class: "btn", href: "#/hl", text: "← 전체 목록" })] : Object.entries(SHOW).map(([k, v]) => el("button", { class: "btn" + (F.show === k ? " on" : ""), text: v[0] + " " + all.filter(v[1]).length, onclick: () => { F.show = k; sessionStorage.setItem("hlshow", k); F.n = 40; draw(); } }))), addr ? null : sortSel);
+    grid.replaceChildren(...list.slice(0, F.n).map(card));
+    more.style.display = list.length > F.n ? "block" : "none";
+  }
+  const checked = Math.max(...all.map(w => w.checked || 0));
+  $("#view").replaceChildren(
+    el("div", { class: "sec sm", text: `하이퍼리퀴드 공식 리더보드 상위 계정과 텔레그램·X에서 언급된 계정입니다. 포지션 조회 시각 ${fmtTime(checked)} KST — 실시간이 아니라 그 시점의 스냅샷입니다.` }),
+    el("div", { class: "tiles" }, [tile("추적 계정", all.length + "개", "포지션 보유 " + all.filter(w => w.positions.length).length + "개"), tile("롱 합계", fmtUsd(totL), "추적 계정의 무기한 롱"), tile("숏 합계", fmtUsd(totS), "추적 계정의 무기한 숏"), tile("롱 비중", (totL + totS ? (totL / (totL + totS) * 100).toFixed(0) : "–") + "%", "명목 금액 기준")]),
+    addr ? null : el("h3", { text: "코인별 롱·숏 합계 (추적 계정)" }),
+    addr ? null : el("div", { class: "scroll" }, [el("table", {}, [th(["코인", "롱", "숏", "순(롱−숏)", "포지션 수"], [1, 2, 3, 4]), el("tbody", {}, coins.map(c => el("tr", {}, [el("td", {}, [el("a", { href: "#/chart/" + symKeyFor(c.coin.replace(/^k/, "").toUpperCase()), text: c.coin })]), el("td", { class: "num", text: fmtUsd(c.long) }), el("td", { class: "num", text: fmtUsd(c.short) }), el("td", { class: "num" }, [delta(c.long - c.short)]), el("td", { class: "num", text: c.n })])))])]),
+    el("h3", { text: addr ? "계정" : "계정 목록" }), chips, grid, more);
+  sortSel.value = F.sort; draw();
+}
+
 /* ------------------------------------------------------------------ router */
 async function route() {
   const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent), tab = parts[0] || "chart";
@@ -429,6 +525,8 @@ async function route() {
     else if (tab === "docs") await viewDocs(parts[1], parts[2]);
     else if (tab === "wallets") await viewWallets(parts[1]);
     else if (tab === "images") await viewImages();
+    else if (tab === "hunt") await viewHunt();
+    else if (tab === "hl") await viewHL(parts[1]);
     else location.hash = "#/chart";
   } catch (e) {
     $("#view").replaceChildren(el("div", { class: "err", text: "화면을 표시하지 못했습니다: " + (e && e.message || e) }));
@@ -437,4 +535,5 @@ async function route() {
 window.addEventListener("hashchange", route);
 window.addEventListener("error", e => { const v = $("#view"); if (v && !v.querySelector(".err")) v.prepend(el("div", { class: "err", text: "스크립트 오류: " + (e.message || e) })); });
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { if ((location.hash || "#/chart").startsWith("#/chart")) route(); });
+getJson("api/meta.json").then(m => { if (m && m.hunt) document.querySelectorAll('#nav a[hidden]').forEach(a => a.removeAttribute("hidden")); });
 route();

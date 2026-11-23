@@ -78,3 +78,6 @@ tr:last-child td{border-bottom:0}
 }
 
 .scroll td{white-space:nowrap}.scroll td .mu{white-space:normal}
+
+#nav a[hidden]{display:none}
+@media(max-width:820px){#nav a{padding:9px 2px;font-size:13.5px}}
